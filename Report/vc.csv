@@ -1,0 +1,12 @@
+"Watershed","Species","AgeClass","sd.Year","sd.Stream","sd.StreamYear","sd.Resid"
+"Ath/NSask","BKTR","AllAges",0,0,0.037,0.296
+"Clearwater","BKTR","AllAges",0,0.982,0,1.099
+"Ram","BKTR","AllAges",0.427,NA,NA,0.306
+"Ath/NSask","BLTR","Immature",0,0.981,0,1.418
+"Clearwater","BLTR","Immature",0.431,0.505,0.139,1.328
+"Ram","BLTR","Immature",0,NA,NA,0.707
+"Ath/NSask","BLTR","Mature",0,0,0,1.043
+"Clearwater","BLTR","Mature",0,0.287,0.505,1.102
+"Ram","BLTR","Mature",0,NA,NA,0.978
+"Ath/NSask","RNTR","Immature",0.694,0.559,0,1.426
+"Ath/NSask","RNTR","Mature",0.298,0.709,0,1.023

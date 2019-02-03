@@ -1,0 +1,1794 @@
+---
+title: "Before-After and BACI-Analysis for AB Environment Restoration Project"
+author: "Carl James Schwarz"
+date: '`r format(Sys.time(), "%Y-%m-%d")`'
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+  pdf_document:
+    number_sections: yes
+    toc: yes
+    fig_caption: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+options(width=200)
+
+library(emmeans)
+library(ggforce)
+library(ggplot2)
+library(ggstance)
+library(lmerTest)
+library(plyr)
+
+# Load the dianostic plots for linear mixed models
+# The most up to date version is located at
+#source("http://www.stat.sfu.ca/~cschwarz/Stat-650/Notes/MyPrograms/schwarz.functions.r")
+# but a copy is included in this directory.
+source("schwarz.functions.r")
+
+
+
+set.seed(2342334)
+
+n.sims.post <- 1000 # size of posterior sample
+
+```
+# Introduction
+Extensive off-highway vehicle (OHV) activies can degrade fish habitat.
+Reclamation activities and reductions in public motorized access 
+have been initiated in Alberta to support native trout recovery. 
+In Alberta, three watersheds are targeted for remediation: 
+Rocky Creek, Fall Creek, and Mackenzie Creek. 
+The Alberta Ministry of Environment and Parks is monitoring fish populations in these watersheds 
+to examine if the reclamation activities result in a 
+measureable change to the density of immature and adult fish, particularly bull trout.
+The density of fish will be measurved using electro-fishing methods as
+described in xxxxxx(xxxx) and the catch per unit effort (CUE) 
+using a standardized protocol will be the response variable.
+
+The purpose of this document is to demonstrate how the collected data will be analyzed to
+examine if change has occured in the mean CUE. Because restoration activities are on going,
+there is little/no data collected post-restoration. Consequently, simulated data will be used
+to demonstrate the analyses.
+
+# Model fitting
+
+## Sources of variation
+There are several levels of variation in the models in this project.
+
+* Stream-to-stream variation. Some streams are naturally more productive than other
+streams. In any model that combines results from several streams (e.g. the BACI models), 
+a random effect for stream should be present in the statistical model. 
+Fortunately, because the same stream is repeated measured over time, the stream
+serves as its own control and so the stream-to-stream variation has litte impact on the
+precision of the results.
+
+* Year-to-year variation. CUE can vary across years at the same location due to 
+year-specific effects (also known as process error) that affect all streams simultaneously.
+For example, a colder-than-normal spring may depress water temperatures during the
+sampling window which could have unspecified effects on the CUE. 
+These year-specific effects tend to push all of the data for a year upwards
+or downwards, which violates a key assumption of independence in regular regression
+and ANOVA models as outlined in Schwarz (2018, 2017). The presence of 
+year-specific effects is accounted for through a random effect of year in the models below.
+
+* Stream-year interaction variation. Ideally, while the mean level of the
+response in different stream would respond in parallel to year-specific effects,
+this is unlikely to occur. The stream-year interaction variation measures
+the non-parallelism in response of streams to year-specific effects. This variation
+is often the limiting factor in the power of a design to detect effects -- refer to Schwarz (2018, 2017)
+for more details.
+
+* Site-to-Site variation within a stream. The CUE on a stream in a specific year will not be the
+same at each site measured. This lowest level of variation represents site-specific effects
+for a particular year, sampling artefacts, measuring error, etc. Multiple sites measured on a
+stream in a year are pseudo-replicates. Consequently, the values should either be averaged before
+the analysis, or a mixed model that incorporates stream-year random effects need to be fit. If the
+designs below are balanced, e.g. every stream measured at the same number of sites in each year, the
+two approaches are mathematically equivalent.
+
+
+## Mixed-linear models
+To account for these sources of variation, mixed linear models will be used with appropriate random
+effects as needed. See the individual analyseses below for more details.
+
+The $\mathit{lmerTest}$ package (Kuznetsova et al., 2018) in the $R$ software system (R Core Team, 2018).
+This package uses Restricted Maximum Likelihood (REML) to fit the models and computes the usual
+estimates, standard errors, and p-values for effects. Post-hoc multiple comparisons among
+effects are computed using the $\mathit{emmeans}$ package (Lenth, 2019) which provides a unified way
+to estimate, for example, pair-wise comparisons such a before vs. after, or baci effects without relying on 
+knowledge of $R$'s internal coding system.
+
+## Checking assumptions
+It is always important to do a model assessment to ensure that the assumptions of the model are satisfied.
+In this analysis the key assumptions are
+
+* Each of the random effects (residual, year effects and site-effects) have a normal distribution
+* There is no autocorrelation over time
+
+It is possible to extract the estimates of the residuals and random effects and create
+residual and caterpillar plots. A custom function (*sf.autoplot.lmer*), suitable for mixed linear models and 
+patterend after similar plots in the
+*ggfortify* package for linear models, is avaiable at:
+[http://www.stat.sfu.ca/~cschwarz/Stat-650/Notes/MyPrograms/schwarz.functions.r]
+and a copy is included in the directory with this report.
+
+```{r echo=FALSE,message=FALSE,warning=FALSE}
+# generate six scenarios; 2 sample sizes x no violations, a single outier, non-normality
+# Before/after study with 4 years before and after
+n.years<-8
+sd.year <- .5
+sd.site <- .3
+
+mlm.data <- expand.grid(n.sites.per.year=c(4,10), Year=1:n.years)
+mlm.data <- plyr::adply(mlm.data, 1, function(x) {
+    x <- x[ rep(1,x$n.sites.per.year),]
+    x$Site <- paste("S",'.',x$Year[1],'.',1:nrow(x), sep="")
+    x})
+year.eff <- data.frame(Year=1:n.years, year.eff=rnorm(n.years, sd=sd.year))
+mlm.data <- merge(mlm.data, year.eff, all.x=TRUE)  # add  year effects
+
+mlm.data$BA <- "Before"
+mlm.data$BA[ mlm.data$Year > n.years/2] <- "After"
+#xtabs(~BA+Year, data=mlm.data)
+BA.eff <- data.frame(BA=c("Before","After"), ba.eff=c(0, .7))
+mlm.data <- merge(mlm.data, BA.eff, all.x=TRUE)
+
+mlm.data$logCUE <- 2 + mlm.data$ba.eff + mlm.data$year.eff 
+
+# Generate the various data sets
+# No violations of assumptions for residuals
+mlm.data1 <- mlm.data
+mlm.data1$logCUE <- mlm.data1$logCUE + rnorm(nrow(mlm.data1), sd=sd.site)
+mlm.data1$Assumptions <- "No violations"
+
+# A single outlier for a residual
+mlm.data2 <- mlm.data
+mlm.data2$logCUE <- mlm.data2$logCUE + rnorm(nrow(mlm.data2), sd=sd.site)
+mlm.data2$logCUE[ mlm.data2$Year==1 & mlm.data2$Site=="S.1.1"] <- 
+  mlm.data2$logCUE[ mlm.data2$Year==1 & mlm.data2$Site=="S.1.1"] +8
+mlm.data2$Assumptions <- 'Outlier'
+
+# A non-normal distribution e.g. t with 2 df
+mlm.data3 <- mlm.data
+mlm.data3$logCUE <- mlm.data3$logCUE + rt(nrow(mlm.data3), df=3)*sd.site
+mlm.data3$Assumptions <- 'Non normal site eff'
+
+mlm.all <- plyr::rbind.fill(mlm.data1, mlm.data2, mlm.data3)
+#head(mlm.all)
+
+# Fit the before/after model to the simulated 
+ba.sim.fits <- plyr::dlply(mlm.all, c("Assumptions","n.sites.per.year"), function(x){
+   #browser()
+   x$YearF <- factor(x$Year)
+   # If we use the log() in the fit, the emmeans package can do the back transform automatically for us
+   fit <- lmerTest::lmer(logCUE ~ BA + (1|YearF), data=x)
+   # we create the emmeans object and then find the pairwise difference
+   fit.emmo <- emmeans::emmeans(fit, ~BA)
+   BA.diff.log <- summary(pairs(fit.emmo), infer=TRUE)
+   BA.ratio    <- summary(pairs(fit.emmo, type="response")) 
+   list(fit=fit, 
+        Assumptions=x$Assumptions[1], n.sites.per.year=x$n.sites.per.year[1],
+        BA.diff.log=BA.diff.log, 
+        BA.ratio=BA.ratio)
+})
+```
+
+### A typical diagnostic plot
+A typical diagnostic plot for one of the models (a before/after study) is:
+```{r message=FALSE,warning=FALSE}
+plot(sf.autoplot.lmer(ba.sim.fits[[1]]$fit))
+```
+
+The two plots in the top row examine the residual, the difference between the observed and fitted data.
+The upper left plot should show a random distribution around 0. An outlier will show itself 
+as point(s) that are far from the rest of the points. The upper right plot is a normal
+probabiity plot. If the residuals follow a normal distribution, the points should lie close to the
+reference line. Non-normality and outliers will show themselves as point(s) far 
+from the line, or a systematic departure from the reference line, especially in the tails.
+
+Outliers should be identied because they have the potential to influence the estimates when 
+the number of sites per year is small. When the number of sites in year becomes larger, the
+impact of an outlier is lessened.
+
+The impact of non-normality is substantially less. In most cases, 
+by year-specific effects (process error) are the limiting factor that determines the
+precision of the estimates and the power to detect effects. Furthermore, because sites in a 
+stream-year are pseudo-replicates, the analysis essentially uses the average logCUE
+over sites in a stream-year in the analysis. The Central Limit Theorem indicates that averages
+of any distribution tend towards normality as sample sizes increase, so the impacts of non-normality
+in the residuals
+are expected to be slight.
+
+The remainder of the plots are *caterpillar plots*, one for each random effect (aside from the residuals) in 
+the model. The blue dots are the estimated value of the specific value for a level of the random effect 
+(in this case for a particular year) and the whiskers represent the uncertainty in this value. If the
+random effect variation is small, the blue dots should be almost vertical along the 0 (vertical) line.
+
+The blue dots should show an approximate normal distribution around the 0 line (you need to 
+imagine the density of the blue dots projected downwards). However, unless you have 20+ levels
+of the random effect, you are unlikely to be able to detect non-normality.
+
+A single random effect value that stands out
+substantially from the rest may be a bit worrisome -- it represents a level of the random factor
+(in this case a year) where the year-specific effect is an "outlier". Outliers can
+lead to larger standard errors in the estimates and reduced power to detect effects in before/after
+studies because
+it says that the mean logCUE for a stream next year could be substantially different than the mean logCUE this year
+due to factors out of your control. Fortunately, in BACI designs, the impact of a large year-specific
+effect occurs on both the impact and control streams and so "cancels" out when the BACI comparison is done. 
+
+Should such outlier random effects be removed, in this case, by dropping a year of data. There
+is no simple answer to this -- presumably if the year-specific effect is caused by a 1-in-a-thousand-flood,
+there are good reasons to drop this year. 
+
+Similarly, random effects for streams (not shown) would be interpretted in the same way. Again, because
+all streams are measured before and after the restoration action, stream effect again "cancel" in the BACI analysis 
+(each stream serves as its own block) and so "outliers" in the caterpillar plots for stream effects are
+or no consequence.
+
+Finally, random effects for year-stream interactions in the BACI model (not shown) represent
+non-parallelism over time in the response of a stream to year-specific effects. Here it is important
+to scrutinize outliers with care because the year-stream interaction variation drives
+the precision and power of the design. 
+
+In many cases, the simplest approach is to run the analysis with the data in question
+included and excluded and see if the final conclusion changes.
+
+
+
+### Impacts of violations at the residual level.
+We simulated six dataset in a before/after scenario -- similar findings are expected for the other models in
+this documents. There were `r n.years` years in the study, with half in the before restoration period and half in the after
+restoration period. In each year, we simulated either 
+`r sort(unique(mlm.all$n.sites.per.year))[1]` or
+`r sort(unique(mlm.all$n.sites.per.year))[2]` sites per year.
+Three scenarios were considered - no violations of assumptions; a single (large) outlier; and a non-normal
+distribution for the residuals that is symmetic but has a much wider spread then a normal distribution.
+
+A plot of the simulated data is:
+
+```{r echo=FALSE}
+mlm.all$n.sites.per.year.text <- paste("Sites per stream-year ", mlm.all$n.sites.per.year)
+ggplot(data=mlm.all, aes(x=Year, y=logCUE))+
+   ggtitle("Simulated data for residual violations")+
+   geom_point( position=position_jitter(width=.1))+
+   facet_grid(Assumptions~n.sites.per.year.text)
+```
+
+The outlier in the first year is evident in the two plots; the impact of non-normality is not obvious from this plot
+and could look like (small) outliers as seen in the plots. With only a small number of sites measured in a stream-year,
+it is unlikely that you will detect non-normality based on a plot of the data.
+
+We fit the before/after model (see below) to the simulated data and extracted the residual plots
+(the two top most plots in the diagnostic plot from the previous section).
+
+```{r echo=FALSE,message=FALSE,warning=FALSE}
+# Extract the residual diagnostic plots
+ba.sim.resid.plot <- plyr::l_ply(ba.sim.fits, function(x){
+   diag.plot <- sf.autoplot.lmer(x$fit, which=c(1,2))
+   diag.plot <- arrangeGrob(top=paste(x$Assumptions,"; ", x$n.sites.per.year,' sites per year',sep=""), diag.plot)
+   plot(diag.plot)
+})
+
+```
+
+The presence of the outlier is evident in both plots regardless of sample size. The non-normality shows
+it self only in the normal probability plots.
+
+THe estimated effect sizes were computed for each simulated dataset:
+
+```{r echo=FALSE}
+# Get all of the fits and store them in a list with the emmeans computatons
+ba.sim.diffs <- plyr::ldply(ba.sim.fits, function(x){x$BA.diff.log})
+#ba.sim.diffs
+
+# pretty up the output
+temp<- ba.sim.diffs
+num.col <- sapply(temp, is.numeric)
+temp[,num.col] <- round(temp[,num.col],2)
+temp$t.ratio <- NULL
+temp[, c("Assumptions","n.sites.per.year","contrast","estimate","SE","df","p.value")]
+```
+
+The effect of the outlier is to cause a negative bias
+in the estimate because the outlier occured in the *before* period and so increased the estimates
+of the mean in the *before* period relative to the *after* period. The bias decreases with increasing
+sample size per year as then the rest of the data swamps this outlier.
+
+The impact of non-normality is slight when the sample size is larger. When the sample size per stream-year is
+small, the non-normality of a single site can look like an outlier with similar effects.
+
+### Impacts of outliers in random effects
+As noted earlier, the impact of a large year-specific effect in a before/after study can be substantial, but
+the impact is less in BACI designs because each stream is measured in each year and so stream- and year-random
+effects cancel in the analysis.
+
+We will again illustrate the impacts using simulated data - in this case a BACI design with 2 streams in each of 
+impact and control and 4 sites measured per stream-year.
+
+```{r echo=FALSE,message=FALSE,warning=FALSE}
+# generate six scenarios; 2 sample sizes x no violations, a single outier, non-normality
+# Before/after study with 4 years before and after
+n.years<-8
+n.streams<- 4
+sd.year <- .5
+sd.site <- .3
+sd.stream <- .5
+sd.year.stream <- .2
+
+mlm.data <- expand.grid(n.sites.per.year=10, Year=1:n.years, Stream=paste("Stream.",1:n.streams,sep=""))
+mlm.data <- plyr::adply(mlm.data, 1, function(x) {
+    x <- x[ rep(1,x$n.sites.per.year),]
+    x$Site <- paste("S",'.',x$Year[1],'.',1:nrow(x), sep="")
+    x})
+
+year.eff <- data.frame(Year=1:n.years, year.eff=rnorm(n.years, sd=sd.year))
+year.eff$BA<- "Before"
+year.eff$BA[ year.eff$Year > n.years/2] <- "After"
+mlm.data <- merge(mlm.data, year.eff, all.x=TRUE)  # add  year effects
+
+stream.eff <- data.frame(Stream=paste("Stream.",1:n.streams,sep=""),
+                         stream.eff=rnorm(n.streams, sd=sd.stream),
+                         CI=c("C","I"))
+mlm.data <- merge(mlm.data,stream.eff, all.x=TRUE)
+
+year.stream.eff <- expand.grid(Year=1:n.years, Stream=paste("Stream.",1:n.streams,sep=""))
+year.stream.eff$year.stream.eff <- rnorm(nrow(year.stream.eff), sd=sd.year.stream)
+mlm.data <- merge(mlm.data, year.stream.eff, all.x=TRUE)
+
+#xtabs(~BA+Year, data=mlm.data)
+#xtabs(~Stream+CI, data=mlm.data)
+
+BA.eff <- data.frame(BA=c("Before","After"), ba.eff=c(0, .7))
+mlm.data <- merge(mlm.data, BA.eff, all.x=TRUE)
+CI.eff <- data.frame(CI=c("C","I"), ci.eff=c(0, .7))
+mlm.data <- merge(mlm.data, CI.eff, all.x=TRUE)
+
+mlm.data$logCUE <- 2 + mlm.data$ba.eff + mlm.data$ci.eff + mlm.data$year.eff +mlm.data$stream.eff +mlm.data$year.stream.eff                     + rnorm(nrow(mlm.data), sd=sd.site)
+
+# Generate the various data sets
+# No violations of assumptions for residuals
+mlm.data1 <- mlm.data
+mlm.data1$Assumptions <- "No violations"
+
+# A year residual
+mlm.data2 <- mlm.data
+mlm.data2$logCUE[ mlm.data2$Year==1 ] <-  mlm.data2$logCUE[ mlm.data2$Year==1] +8
+mlm.data2$Assumptions <- 'Outlier - Year Effect'
+
+# A stream outlier
+mlm.data3 <- mlm.data
+mlm.data3$logCUE[ mlm.data3$Stream=="Stream.1" ] <-  mlm.data3$logCUE[ mlm.data3$Stream=="Stream.1"] +8
+mlm.data3$Assumptions <- 'Outlier - Stream Effect'
+
+# A stream outlier
+mlm.data4 <- mlm.data
+mlm.data4$logCUE[ mlm.data4$Stream=="Stream.1" & mlm.data$Year==1 ] <-  mlm.data4$logCUE[ mlm.data4$Stream=='Stream.1' & mlm.data$Year==1] +8
+mlm.data4$Assumptions <- 'Outlier - Year-Stream Effect'
+
+
+mlm.all <- plyr::rbind.fill(mlm.data1, mlm.data2, mlm.data3, mlm.data4)
+#head(mlm.all)
+
+# Fit the before/after model to the simulated 
+baci.sim.fits <- plyr::dlply(mlm.all, c("Assumptions"), function(x){
+   #browser()
+   x$YearF <- factor(x$Year)
+   fit <- lmerTest::lmer(logCUE ~ BA + CI + BA:CI + (1|YearF) + (1|Stream) + (1|Stream:YearF), data=x)
+   # we create the emmeans object and then find the pairwise difference
+   fit.emmo <- emmeans::emmeans(fit, ~BA:CI)
+   BACI.diff.log <- summary(contrast(fit.emmo,list(baci=c(-1,1,1,-1))), infer=TRUE)
+   list(fit=fit, 
+        Assumptions=x$Assumptions[1],
+        BACI.diff.log=BACI.diff.log)
+})
+```
+
+A plot of the simulated data:
+
+```{r echo=FALSE}
+ggplot(data=mlm.all, aes(x=Year, y=logCUE, color=CI, linetype=Stream))+
+   ggtitle("Simulated data for BACI analysis")+
+   geom_point()+
+   geom_line()+
+   geom_vline(xintercept=.5+n.years/2)+
+   facet_wrap(~Assumptions, ncol=2)+
+   xlab("Year\nVertical line delineates before/after")
+```
+
+shows four scenarios where an outlier exists on one of the random components. 
+
+The diagnostic plots from the four scenarios appear below:
+
+```{r echo=FALSE,message=FALSE,warning=FALSE}
+# Extract the residual diagnostic plots
+baci.sim.resid.plot <- plyr::l_ply(baci.sim.fits, function(x){
+   diag.plot <- sf.autoplot.lmer(x$fit, which=c(3,4,5))
+   diag.plot <- arrangeGrob(top=paste(x$Assumptions,sep=""), diag.plot)
+   plot(diag.plot)
+})
+
+```
+
+The outlier is apparent in all the plots except for that of stream. With only a few streams it is difficult to detect
+a large stream effect, but as noted previously, it does not affect the BACI analysis.
+
+Estimates of BACI effect sizes can be computed under each scenario:
+
+```{r echo=FALSE}
+# Get all of the fits and store them in a list with the emmeans computatons
+baci.sim.diffs <- plyr::ldply(baci.sim.fits, function(x){x$BACI.diff.log})
+#baci.sim.diffs
+
+# pretty up the output
+temp<- baci.sim.diffs
+num.col <- sapply(temp, is.numeric)
+temp[,num.col] <- round(temp[,num.col],2)
+temp$t.ratio <- NULL
+temp[, c("Assumptions","contrast","estimate","SE","df","p.value")]
+```
+
+Only the outlier in the stream-year random effects has any influence on the estimates or p-values for the
+reasons explained earlier.
+
+
+## Same or different sites measured over time.
+Sampling at the lowest level, i.e., at the site, can be done using a new set of sites for
+each stream-year combination (consistent with previous sampling protocols) or by revisiting
+the same sites over time (proposed changes to the sampling protocols), or a mixture of the two.
+
+The analyses presented below implicitly assume that sites change from year-to-year within a stream. If 
+some sites are revisited, this approach is slightly inefficient (i.e. reported standare errors
+and reported p-values will be slightly too large) because revisiting sites over time
+can account for some of the site-to-site variation in measuring trends. However, in many cases, the
+limiting factors to detecting trends are year-specific effects (process error) and stream-year interactions
+and so the impact is expected to be slight.
+
+Modifications to the statistical models to account for some sites being repeated measured over time would
+involve the addition of a new term representing the specific sites visited (e.g. $(1|Site)$) where the $\mathit{Site}$ 
+variable is an alphanumeric code for the individual sites that remains consistent
+over years (e.g. based on lat/long of the site location). This addition to the model is appropriate if all sites
+are repeated measured over time, or if only some of the sites are repeatedly measured over time. If none
+of the sites have been measured over time, then this term is confounded with the residual variation and can 
+be deleted (as shown in the models below).
+
+
+## Bayesian belief
+While traditional mixed linear models provide p-values and estimates of effect size with
+measures of uncertainty (standard errors and confidence intervals), the results are often
+difficult to interpret.
+
+In the traditional Neyman-Pearson system, there either is evidence ($\textit{p-value}<.05$) or
+no evidence ($\textit{p-value}>.05$) of an effect. While confidence intervals provide some information
+on the size of the effect, they are also difficult to deal with in a intuitive fashion. For example,
+if a confidence interval for an effect size ranges from $(-1 \rightarrow 1)$, it covers the value of 0 
+(indicating no effect) but such a result is qualitatively different from another interval
+$(-0.1 \rightarrow 1.9)$ that "barely" contains the value of 0. 
+
+A Bayesian posterior belief of an effect has a very intuitive interpretation and
+is easily computed once the mixed linear models are fit. Gelman and Hill (2006) show
+that the estimates from a mixed model fit are also the modes of the posterior distribution
+for that parameter with suitably chosen priors. Gelman and Su (2019) implement these ideas
+in the $\mathit{arm}$ package so that a sample from the posterior distribution can 
+be generated after a mixed model fit without having to use specialized software, but at 
+the price that it is difficult to modify the priors. [With enough data, the priors
+will have limited impact on the results]. Then it is relatively easy to compute, for example,
+the Bayesian posterior belief that the difference in means between before and after restoration is
+positive which has a natural interpretation.
+
+
+# Characteristics of the simulated data
+The data is used to illustrate the analyses below is a combination of current data and simulated data.
+All of the current data is treated as "Before" restoration data and streams are divided into their control/impact (restored)
+status.
+
+The simulated data starts in 2018 and ends in 2023. The 2018 year is treated as "Before" year so that 
+all streams have at least two years of "Before" data (this is needed to fit the broken-stick model below).
+[When the actual data are available, the start of the restoration period can be set separately for each watershed.]
+
+The number of sites simulated in each stream-year is a random sample taken from the set of number of sites measured
+in each steam-year in the current data with a minimum of two sites measured per stream-year. The first
+four (or the actual number if less than 4 sites are simulated) are treated as "permanent" sites that are 
+repeatedly measured over time. All other sites are assumed to be new sites in each stream-year.
+
+The existing data was used to estimate the variance components associated with streams, years, and stream-year interactions.
+These variance components were used to generate random normal deviations on the $log(\mathit{CUE})$ representing
+the effects of streams, year, and stream-years.
+
+The current data has virtually NO sites that were repeatedly measured over time, so it is not possible to
+estimate the site variance component.
+Consequently, no site effects were generated so it will not be surprising that 
+models with *Site* effects will have estimated site variance components of zero. [You can still fit the models
+with permanent sites -- the results would then be essentially the same as the model without site effects.]
+
+No effect of restoration is simulated, and so the means before and after restoration should be similar.
+[An effect could be simulated, but has no impact on the analysis below, other than to show an effect.]
+ 
+The simulated data was written to a *.csv* file for usage in this document. 
+
+
+
+
+# Preliminary Data Preprocessing
+Data will be available from the FWMIS system and it is assumed that 
+it will have been downloaded into a suitable format, e.g.
+an Excel worksbook or a csv file. We currently use the simulated data as described above.
+
+## Imputation of 0 values
+One of the key issues with many database systems is accounting for sites that are visited, but NO fish, of a particular/all species were 
+detected. In many cases, database systems only record postive counts. A naive extraction of the data from such systems would 
+not capture the 0 counts for species looked for but not seen.
+
+This could lead to biases in estimates. For example, consider very simple example where:
+
+Site | Species | Count
+-----|---------|------
+A    | RNTR    |  3
+A    | BKTR    |  2
+B    | BKTR    |  2
+B    | BLTR    |  5
+C    | RNTR    |  5
+C    | BKTR    |  2
+----------------------
+
+A incorrect estimate of mean density over the
+three sites for RNTR would be $(3+5)/2$ rather than the correct estimate of $(3+0+5)/3$.
+
+To account for species with 0 counts, the database system must have two separate tables.
+In the first table, is a record of all visits made to all sites in each year regardless if any fish are captured or not. 
+This table should contain information
+that is specfic to the visit, such as the length of the segment, the personell used, etc.
+
+The second table would contain a count of the detected fish species 
+for each visit. Notice that only records for species with positive
+counts will be included. Consequently, it will be necessary to impute counts of 0 for sites in which a visit was made but
+this species was not detected.
+
+By merging the two tables, records with 0 counts for species not detected can be inserted.
+This document will assume that this *zero imputation* has been done, 
+so the input file has a record of the count (including 0) for each species 
+of interest at each year-site-visit combination. 
+The CPUE is then computed as the $count / distance~sampled * 300$ to standardize per 300 m of effort for each visit.
+
+The current FWMIS system has been set up as a relational database along these lines.
+One table has higher level information about a site (distance shocked, location, etc.) 
+and a second table has dependent information on species captured (fork length, weight, sex, etc.). 
+The Oracle query in FWMIS is now designed to provide information on sites with zero fish encountered to aleviate
+this potential problem.
+
+## Additional variables needed
+Each combination of stream and year also needs to be labelled with two variables. 
+The variable $\mathit{BA}$ indicates if the measurement 
+takes place *before* or *after* the restoration
+takes place in the watershed (e.g. using codes $Before$ and $After$); the variable $\mathit{CI}$ indicates
+if the stream is a control ($C$) or restored (treated, $T$). 
+
+Of course, other codes can be used and the code below may have to be modified. 
+The modifications should be obvious in most cases. Some care will be needed
+in the sections of code where the Bayesian posterior beliefs are extracted as
+the variable name used to extract the posterior samples depends on the internal 
+$R$ coding of factor levels. A simple listing of the few records from the data frame generated
+by the *arm::sim()* function will show the variable names generated by $R$.
+
+
+
+## Response variable
+As explained in previous reports, the response variable is the 
+$log(\mathit{CUE}+\mathit{offset})$ where $log()$ refers to the natural
+logarithmic transform and the $\mathit{offset}$ is 1/2 of the smallest non-zero value. 
+A separate offset will be used for each
+combination of species, watershed, and age-class.
+
+## Read data
+We read in the (simulated) CUE data that includes the before and after data and
+compute the $log(CUE+offset)$.
+```{r }
+cue.data <- read.csv("simulated.data.csv",  header=TRUE, as.is=TRUE, strip.white=TRUE)
+head(cue.data)
+tail(cue.data)
+
+# compute offset for each watershed, species, age-class
+offset <- plyr::ddply(cue.data, c("Watershed","Species","AgeClass"), plyr::summarize,
+                      offset = .5* min(CUE[ CUE>0]))
+offset
+
+
+cue.data <- merge(cue.data, offset)
+cue.data$logCUE <- log(cue.data$CUE + cue.data$offset)
+```
+
+I'm a paranoid guy, so I do extensive checks before doing any analysis!
+
+## How many sites measured each year on each stream?
+We first enumerate how many sites are measured on each stream in each year.
+
+```{r }
+stream.year.sites <- unique(cue.data[,c("Watershed","Stream","Year","Site")] )
+xtabs(~paste(Watershed,',',Stream,sep="")+Year, data=stream.year.sites)
+
+```
+The actual number that are measured for each stream-year is not that 
+important and the analyses below do not depend on the design being balanced,
+i.e. different number of sites can be measured in for each stream-year 
+,and in some years, no sites could be measured.
+
+## Check BA classification
+We check that the $\mathit{BA}$ variable has been set for each stream-year combination. 
+First, any one year must be classified
+into one and only one period.
+```{r }
+stream.year <- unique(cue.data[,c("Watershed","Stream","Year","BA")] )
+xtabs(~paste(Watershed,',',Stream,sep="")+Year, data=stream.year)
+```
+We check that the above table has only 1 and 0's for any entry. Any entry that is >1 indicates a year that is classified
+in more than one period for  particular stream, which is not possible.
+
+Similarly, we look at the actual classification of each stream-year combination:
+```{r }
+# R allows matrices to be index by the row/column names. We set up a matrix with the appropriate names
+# and then assign the values based on the combination of row names and column names seen in the data.
+# See the help files for '[' for more information
+stream.year <- unique(cue.data[,c("Watershed","Stream","Year","BA")] )
+BA.table <- matrix(" ", nrow=length(unique(cue.data$Stream)), ncol=length(unique(cue.data$Year)))
+colnames(BA.table) <- as.character(sort(unique(cue.data$Year)))
+rownames(BA.table) <- sort(unique(paste(cue.data$Watershed,'.',cue.data$Stream,sep="")))
+BA.table[ cbind( paste(stream.year$Watershed,".",stream.year$Stream,sep=""), as.character(stream.year$Year))] <- substr(stream.year$BA,1,1)
+BA.table
+```
+We check that for all years, the correct designation of before and after has been done.
+
+## Check CI classification
+Similarly, we check that the $\mathit{CI}$ variable has been set for each stream-year combination. First, any one stream-year must be classified
+into either the treatment or control groups.
+```{r }
+stream.year <- unique(cue.data[,c("Watershed","Stream","Year","CI")] )
+xtabs(~paste(Watershed,',',Stream,sep="")+Year, data=stream.year)
+```
+We check that the above table has only 1 and 0's for any entry. Any entry that is >1 indicates a year that is classified
+in more than one of treatment or control for  particular stream, which is not possible.
+
+Similarly, we look at the actual classification of each stream-year combination:
+```{r }
+stream.year <- unique(cue.data[,c("Watershed","Stream","Year","CI")] )
+CI.table <- matrix(" ", nrow=length(unique(cue.data$Stream)), ncol=length(unique(cue.data$Year)))
+colnames(CI.table) <- as.character(sort(unique(cue.data$Year)))
+rownames(CI.table) <- sort(unique(paste(cue.data$Watershed,'.',cue.data$Stream,sep="")))
+CI.table[ cbind( paste(stream.year$Watershed,".",stream.year$Stream,sep=""), as.character(stream.year$Year))] <- substr(stream.year$CI,1,1)
+CI.table
+```
+We check that for all years, the correct designation of *control* or *impact* has been done.
+
+## Check for sites measured more than once.
+We check for repeated sites.
+```{r }
+# Check for repeatedly measured sites over time
+sites <- unique(cue.data[,c("Watershed","Stream","Site","Year")])
+n.visits.per.site <- plyr::ddply(sites, c("Watershed","Stream","Site"), plyr::summarize,
+                                 n.visits=length(Year))
+
+cat("Sites with more than one visit over time\n")
+rep.sites <- n.visits.per.site[ n.visits.per.site$n.visits >1,]
+
+head(rep.sites)
+sites.red <- merge(sites, rep.sites, all.y=TRUE) # only selected the repeated sites.
+
+xtabs(~ paste(Watershed,'.',Stream,'.',Site,sep="")+Year, data=sites.red, exclude=NULL, na.action=na.pass)
+```
+We see that there were essentially no repeated sites in the real data (2017 and before),
+but up to 4 repeated sites per stream in the simulated data (sites labelled SP1, SP2, SP3, or SP4).
+Not all repeated sites are measured in each year.
+
+
+```{r echo=FALSE, eval=FALSE}
+####################################################################################################################
+####################################################################################################################
+####################################################################################################################
+####################################################################################################################
+```
+# Before-After Analysis
+The simplest analysis is a before-after analysis where the mean CPUE is compared betweeh the before restoration period
+and the after restoration period. This assumes that restoration results in a step change in restoration, rather than a gradual trend.
+No control river is used, so an effect may be confounded with temporal changes between the two periods.
+
+## Preliminary plot
+A preliminary plot is constructed to check for outliers etc. 
+
+```{r }
+# Compute the mean logCUE for each year
+mean.CUE <- plyr::ddply(cue.data, c("Watershed","Stream","Species","AgeClass","Year","BA"), 
+                plyr::summarize,
+                    mean.logCUE=mean(logCUE, na.rm=TRUE))
+
+# When did restoration take place for each watershed/species
+year.restore <- plyr::ddply(mean.CUE, c("Watershed","Stream","Species","AgeClass"), plyr::summarize,
+                            year.restore = max( Year[ BA == "Before"]))
+
+# A separate plot is produced for each species
+plyr::l_ply(sort(unique(cue.data$Species)), function(x,cue.data, mean.CUE){
+  sel.cue.data <- cue.data[ cue.data$Species==x,]
+  sel.mean.CUE <- mean.CUE[ mean.CUE$Species==x,]
+  plot.cue<- ggplot(data=sel.cue.data, aes(x=Year, y=logCUE, color=AgeClass))+
+     ggtitle(paste("Preliminary plot of the data for ",x))+
+     geom_point( position=position_jitter(h=.1))+
+     geom_line(data=sel.mean.CUE, aes(y=mean.logCUE), position=position_jitter(h=.1))+
+     facet_wrap(~paste(Watershed, '.', Stream), ncol=3)+
+     theme(legend.justification=c(1,0), legend.position=c(1,0))
+  plot(plot.cue)
+}, cue.data=cue.data, mean.CUE=mean.CUE)   
+```
+
+If outliers are detected, they should be dealt with.
+
+
+## The statistical model.
+The statistical model must account for the multiple measurements in a site-year (the multiple sites). This can be done
+in two ways
+
+* Average the $log(CUE+offset)$ for each site-year combination and analyze the averages using
+a t-test (or similar analysis). 
+This will be approximate if the design is unbalanced, but the difference from the exact
+analysis (below) should, in most cases, be slight.
+* Use a mixed-linear model with random year effects to account for the multiple measurements
+in a year. 
+
+If the design were exactly balanced, i.e. the same number of measurements (sites) in each year, 
+the two approaches would give exactly the same results.
+
+We will use the mixed-linear model approach for every combination of species-ageclass-stream.
+The model is
+$$log(\mathit{CUE}+\mathit{offset}) \sim \mathit{BA} + \mathit{YearF}(R)$$
+where $\mathit{BA}$ is the before/after classification for each year, and 
+$\mathit{YearF}$ is a random effect of years
+(it must be declared as a factor to avoid being 
+confused with a linear trend).
+A multiple comparison procedure will then estimate the size of the effect on both the log-scale 
+(difference in mean logarithms) and the original scale (ratio of means) between the before and after periods.
+
+## Using R to fit and extract results
+The $\mathit{lmerTest}$ package is used to fit the model; the $\mathit{emmeans}$ package is used to estimate the
+period effect after the model is fit.
+
+```{r  }
+# Get all of the fits and store them in a list with the emmeans computatons
+ba.fits <- plyr::dlply(cue.data, c("Watershed","Stream","Species","AgeClass"), function(x){
+   #browser()
+   x$YearF <- factor(x$Year)
+   # If we use the log() in the fit, the emmeans package can do the back transform automatically for us
+   fit <- lmerTest::lmer(log(CUE+offset) ~ BA + (1|YearF), data=x)
+   # we create the emmeans object and then find the pairwise difference
+   fit.emmo <- emmeans::emmeans(fit, ~BA)
+   BA.diff.log <- summary(pairs(fit.emmo), infer=TRUE)
+   BA.ratio    <- summary(pairs(fit.emmo, type="response")) 
+   list(fit=fit, 
+        BA.diff.log=BA.diff.log, 
+        BA.ratio=BA.ratio)
+})
+
+# Show the results for the first fit
+ba.fits[[1]]$fit
+ba.fits[[1]]$BA.diff.log
+ba.fits[[1]]$BA.ratio
+```
+A message about a singular fit indicates that the estimated standard deviation of the year random effect is 0.
+The estimated difference/ratio between the after and before periods, along with standard errors, a 95% confidence limit,
+and p-value of the test for no effect is produced.
+
+The fitted values and observed data can be plotted together. The blue line below is the fitted trend line
+and the red line joins the mean of the log(CUE).
+```{r  }
+
+# Get the fitted values
+ba.pred <- plyr::ldply(ba.fits, function(x){
+   #browser()
+   # need to convert the YearF from factor back to numeric value 
+   pred <- cbind( x$fit@frame, pred=predict(x$fit, re.form=~0))
+   pred$Year <- as.numeric(as.character(pred$YearF))
+   pred
+})
+
+# Now to generate the observed and fitted data for each Watershed/Stream combination
+npages=nrow(unique(cue.data[,c("Watershed","Stream","Species")]))*3/9
+plyr::l_ply(1:npages, function(page){
+  plot.fit <- ggplot(data=cue.data, aes(x=Year, y=logCUE))+
+     ggtitle("Observed and fitted data from before/after model")+
+     geom_point(position=position_jitter(width=0.1))+
+     geom_line(data=ba.pred,  aes(y=pred), color='blue', size=2)+
+     geom_line(data=mean.CUE, aes(y=mean.logCUE), color="red")+
+     geom_vline(data=year.restore, aes(xintercept=year.restore+.5))+
+     facet_grid_paginate(Watershed+Stream+Species~AgeClass, page=page, nrow=3, ncol=3)
+  plot(plot.fit)
+})
+```
+
+
+
+This set of fits and estimated differences/ratio can be used to construct summary plots
+
+```{r  }
+# Get all of the fits and store them in a list with the emmeans computatons
+ba.diffs <- plyr::ldply(ba.fits, function(x){x$BA.diff.log})
+#head(ba.diffs)
+
+# pretty up the output
+temp<- ba.diffs
+num.col <- sapply(temp, is.numeric)
+temp[,num.col] <- round(temp[,num.col],2)
+temp$t.ratio <- NULL
+temp
+
+ggplot(data=ba.diffs, aes(y=paste(Watershed,".",Stream,sep=" "), x=estimate))+
+   ggtitle("Estimated difference (log scale) between before and after")+
+   geom_point()+
+   ggplot2::geom_errorbarh( aes(xmin=lower.CL, xmax=upper.CL), height=.01)+
+   xlab("Estimated difference (log-scale) and 95% ci")+
+   ylab("Watershed - Stream")+
+   geom_vline(xintercept=0)+
+   facet_grid(Species~AgeClass)
+
+
+```
+
+A similar plot can be made for the ratio of the mean (not shown). 
+
+Case where the 95% confidence interval does not include the value of 0 (vertical line) indicate
+evidence of a difference. The actual p-value is presented in the *ba.diffs* data.frame constructed 
+above if these are of interest.
+
+## Bayesian posterior beliefs
+The $\mathit{arm}$ package can be used to generate samples from the posterior distribution of the effect size.
+Some care is needed because knowledge of the coding used by $R$ is required -- in particular, 
+is the estimate of the fixed effect the difference of means computed as 
+$\mathit{mean}_\mathit{before} - \mathit{mean}_\mathit{after}$ or vice-versa.
+
+```{r  }
+# sample from the posterior, plot the violin plots and compute the posterior belief that after-before >0
+ba.diffs.post <- plyr::ldply(ba.fits, function(x){
+   #browser()
+   post.samples <- arm::sim(x$fit, n.sims=n.sims.post)
+   data.frame(post.diff.A.minus.B = -post.samples@fixef[,2]) # notice that R computes before-after
+})
+head(ba.diffs.post)
+
+# compute the posterior belief that slope > 0
+ba.diffs.belief <- plyr::ddply(ba.diffs.post, c("Watershed","Stream","Species","AgeClass"),
+                     plyr::summarize,
+                       post.belief.gt.0 = mean(post.diff.A.minus.B >0))
+head(ba.diffs.belief)
+
+ggplot(data=ba.diffs.post, aes(y=paste(Watershed,".",Stream,sep=" "), x=post.diff.A.minus.B))+
+   ggtitle("Posterior sample for difference (log scale) in After - Before mean")+
+   ggstance::geom_violinh()+
+   geom_text(data=ba.diffs.belief, label=formatC(ba.diffs.belief$post.belief.gt.0,2, format="f"), 
+             aes(x=-Inf), hjust=-.2) +
+   xlab("Difference (log-scale) (After-Before)\nWith posterior belief that difference > 0")+
+   ylab("Watershed - Stream")+
+   geom_vline(xintercept=0)+
+   facet_grid(Species~AgeClass)
+```
+
+The posterior belief that the difference in means (log-scale; After-Before) is positive has a nice
+interpretation. 
+
+## Checking assumptions
+It is always important to do a model assessment to ensure that the assumptions of the model are satisfied.
+In this analysis the key assumptions are
+
+* Each of the random effects (year effects and site-effects) have a normal distribution
+* There is no autocorrelation over time
+
+It is possible to extract the estimates of the two sets of random effects and create
+residual and caterpillar plots.
+
+```{r message=FALSE,warning=FALSE}
+# The dianostic plot is produced for the first fit as a demonstration
+plyr::l_ply(ba.fits[2], function(x){
+   diag.plot <- sf.autoplot.lmer(x$fit)
+   plot(diag.plot)
+  
+})
+
+
+
+```
+
+The residual plot (upper left corner) should show random scatter around 0. There are only two columns
+to the residuals because there are only two fitted values, the mean before restoration took place
+and the mean after restoration took place.
+
+The normal
+probability plot (upper right) for the residuals (the site effects) should fall
+close to the theoretical line of fit. It is not crucial that these lowest random effects have an exact normal distribution
+since they are effectively averaged in the analysis and the central-limit theorem 
+indicates that the average of any distribution will tend towards normality as the
+sample size increases.
+
+The caterpillar plot (bottom left) should
+show no large outlier effects for specific years. In this case, the estimated standard
+deviation of the year effects is 0, so all of the points (with 95% credible interval)
+are the same at 0.
+
+It will be extremely difficult to detect autocorrelation over time unless you have 10+ years of 
+data (Bence 1995) and so this is not done here.
+
+
+## Adjusting the analysis for repeatedly measuring the same site over time
+As noted earlier, the presented analyses assume that a different set of sites
+is measured in each stream-year combination. However, all else being equal,
+there is some advantage to measuring the same site repeated over time.
+In this case, the above model must be modified to account for the 
+site-specific effects. We assume that the $Site$ variable has a unique alphanumeric
+code representing a particular site. The model is adjusted by including another
+term $(1|\mathit{Site})$ that accounts for the same site being repeatedly measured over time.
+Not all sites need to be repeatedly measured, and a site does not have to be repeatedly measured in all years. 
+However, at least one site should have been measured in more than one year.
+
+
+We then modify the previous fitting code to account for some with sites with multiple measurements
+by adding the *(1|Site)* term to the model. The rest of the code can then be run without anyother
+changes.
+```{r}
+# Get all of the fits and store them in a list with the emmeans computatons
+# Account for repeated measurements on the same stream
+ba.fits.rep <- plyr::dlply(cue.data, c("Watershed","Stream","Species","AgeClass"), function(x){
+   #browser()
+   x$YearF <- factor(x$Year)
+   # If we use the log() in the fit, the emmeans package can do the back transform automatically for us
+   fit <- lmerTest::lmer(log(CUE+offset) ~ BA + (1|YearF) +(1|Site), data=x)
+   # we create the emmeans object and then find the pairwise difference
+   fit.emmo <- emmeans::emmeans(fit, ~BA)
+   BA.diff.log <- summary(pairs(fit.emmo), infer=TRUE)
+   BA.ratio    <- summary(pairs(fit.emmo, type="response")) 
+   list(fit=fit, 
+        BA.diff.log=BA.diff.log, 
+        BA.ratio=BA.ratio)
+})
+
+# Extract one of the fitting results for closer examination
+# In particular, look at the variance component associated with permanent Sites
+ba.fits.rep[[1]]$fit
+ba.fits.rep[[1]]$BA.diff.log
+ba.fits.rep[[1]]$BA.ratio
+
+# the rest of the code has no other modifications
+# Get all of the fits and store them in a list with the emmeans computatons
+ba.diffs.rep <- plyr::ldply(ba.fits.rep, function(x){x$BA.diff.log})
+#head(ba.diffs)
+
+# pretty up the output
+temp<- ba.diffs.rep
+num.col <- sapply(temp, is.numeric)
+temp[,num.col] <- round(temp[,num.col],2)
+temp$t.ratio <- NULL
+temp
+
+ggplot(data=ba.diffs.rep, aes(y=paste(Watershed,".",Stream,sep=" "), x=estimate))+
+   ggtitle("Estimated difference (log scale) between before and after",
+           subtitle="Repeated measurements on the same site accounte for")+
+   geom_point()+
+   ggplot2::geom_errorbarh( aes(xmin=lower.CL, xmax=upper.CL), height=.01)+
+   xlab("Estimated difference (log-scale) and 95% ci")+
+   ylab("Watershed - Stream")+
+   geom_vline(xintercept=0)+
+   facet_grid(Species~AgeClass)
+
+
+```
+
+
+
+
+
+
+
+```{r echo=FALSE, eval=FALSE}
+####################################################################################################################
+####################################################################################################################
+####################################################################################################################
+####################################################################################################################
+```
+# Trend with a breakpoint
+## Introduction
+The before/after analysis assumes a step-change in the mean between the before and after
+restoration activities. In some cases, the effect of restoration can be more gradual
+with incremental improvements over time.
+
+In this section, we will fit a *broken-stick* trend where the slopes of the trends
+could be different between the two periods, but the lines are joined together
+at the point of restoration. For example, here is sample plot illusrating the line we wish to fit:
+```{r echo=FALSE}
+# Generate a sample plot of broken stick line
+sample.data <- expand.grid(Year=2010:2020, Site=1:5)
+sample.data$logCUE <- 1 + .1*sample.data$Year + .15*pmax(0,sample.data$Year-2015) + rnorm(nrow(sample.data), sd=.2)
+sample.data$Yearp <- pmax(0, sample.data$Year-2015)
+# add year specific effects
+sample.year.eff <- data.frame(Year=2010:2020, year.eff=rnorm(length(2010:2020), sd=.1))
+sample.data <- merge(sample.data, sample.year.eff, all.x=TRUE)
+sample.data$logCUE <- sample.data$logCUE + sample.data$year.eff
+sample.data$YearF <- factor(sample.data$Year)
+sample.data.fit <- lmerTest::lmer(logCUE ~ Year + Yearp + (1|YearF), data=sample.data)
+sample.data$predict <- predict(sample.data.fit, re.form=~0)
+
+ggplot(data=sample.data, aes(x=Year, y=logCUE))+
+   ggtitle("Illustration of broken-stick line",
+           subtitle="Includes year-specific effects (process error)")+
+   geom_point()+
+   geom_line(aes(y=predict))+
+   geom_vline(xintercept=2015.1)+
+   scale_x_continuous(breaks=2000:3000)+
+   xlab("Year \n Vertical line is when restoration takes place")
+
+```
+
+Interest lies if the **slope** changes between the pre- and post-restoration activity.
+
+## The statistical model
+The statistical model must include a mechanism to create the broken-stick and to account
+for year-specific effect (process error). The model is:
+$$log(\mathit{CUE}+\mathit{offset}) \sim Year + YearP + \mathit{YearF}(R)$$
+where $\mathit{Year}$ represents the yearly trend before restoration takes place;
+$\mathit{YearP}$ represents the change in trend after restoration takes place; and
+$\mathit{YearF}$ again represents the (random) year-specific effects (process error).
+
+## Using R to fit and extract results
+
+The data structure includes a new variable $\mathit{YearP}$ which is 0 for years prior 
+to when restoration takes place, and then takes the value of $\mathit{Year}-\mathit{Year~of~restoration}$.
+For example, if restoration took place in 2015, the new $\mathit{YearP}$ variable is computed (in $R$) as
+`data$YearP = pmax(data$Year - 2015)`.
+
+The $\mathit{lmerTest}$ package is used to fit the model; the $\mathit{emmeans}$ package is used to estimate the
+period effect after the model is fit.
+
+```{r  warning=FALSE}
+# Get all of the fits and store them in a list with the emmeans computatons
+
+bs.fits <- plyr::dlply(cue.data, c("Watershed","Stream","Species","AgeClass"), function(x){
+   #browser()
+   x$YearF <- factor(x$Year)
+   
+   # find the year of restoration
+   restore.year <- max(x$Year[ substr(x$BA,1,1)=="B"])
+   # compute the YearP variable
+   x$YearP <- pmax(0, x$Year - restore.year)
+   
+   # If we use the log() in the fit, the emmeans package can do the back transform automatically for us
+   fit <- lmerTest::lmer(log(CUE+offset) ~ Year + YearP + (1|YearF), data=x)
+   
+   # extract the estimates of the two slopes and the change in the slope
+   # also get the confidence intervas
+   ci <- confint(fit, "Year", quiet=TRUE)
+   init.slope <- cbind(summary(fit)$coefficients[ row.names(summary(fit)$coefficients)=="Year",,drop=FALSE], ci)
+   ci <- confint(fit, "YearP", quiet=TRUE)
+   delta.slope<- cbind(summary(fit)$coefficients[ row.names(summary(fit)$coefficients)=="YearP",,drop=FALSE], ci)
+   # compute the final slope by fitting the same model except in reverse
+   x$YearP2 <- pmax(0, restore.year-x$Year)
+   fit2 <- lmerTest::lmer(log(CUE+offset) ~ Year + YearP2 + (1|YearF), data=x)
+   ci <- confint(fit2, "Year", quiet=TRUE)
+   final.slope<-cbind(summary(fit2)$coefficients[ row.names(summary(fit2)$coefficients)=="Year",,drop=FALSE], ci)
+   
+   # fix the names for each 
+   colnames(init.slope) <- make.names(colnames(init.slope))
+   colnames(delta.slope)<- make.names(colnames(delta.slope))
+   colnames(final.slope)<- make.names(colnames(final.slope))
+   list(Watershed=x$Watershed[1], Stream=x$Stream[1], Species=x$Species[1], AgeClass=x$AgeClass[1],
+        fit=fit, 
+        init.slope=init.slope,
+        delta.slope=delta.slope,
+        final.slope=final.slope)
+})
+
+# Show the results for one of the fits
+bs.fits[[1]]$fit
+bs.fits[[1]]$init.slope
+bs.fits[[1]]$delta.slope
+bs.fits[[1]]$final.slope
+```
+A message about a singular fit indicates that the estimated standard deviation of the year random effect is 0.
+The estimated change in the slope between the after and before periods, along with standard errors, a 95% confidence limit,
+and p-value of the test for no change in the slope is produced.
+
+
+We can examine the plots of fitted and predicted values to check te general form of the fit and
+again for any obvious problems:
+```{r}
+# Get the fitted values
+bs.pred <- plyr::ldply(bs.fits, function(x){
+   #browser()
+   # need to convert the YearF from factor back to numeric value 
+   pred <- cbind( x$fit@frame, pred=predict(x$fit, re.form=~0))
+   pred$Year <- as.numeric(as.character(pred$YearF))
+   pred
+})
+
+# Now to generate the observed and fitted data for each Watershed/Stream combination
+npages=nrow(unique(cue.data[,c("Watershed","Stream","Species")]))*3/9
+plyr::l_ply(1:npages, function(page){
+  plot.fit <- ggplot(data=cue.data, aes(x=Year, y=logCUE))+
+     ggtitle("Observed and fitted data from brocken stick model")+
+     geom_point(position=position_jitter(width=0.1))+
+     geom_line(data=bs.pred,  aes(y=pred), color='blue', size=2)+
+     geom_line(data=mean.CUE, aes(y=mean.logCUE), color="red")+
+     geom_vline(data=year.restore, aes(xintercept=year.restore+.5))+
+     facet_grid_paginate(Watershed+Stream+Species~AgeClass, page=page, nrow=3, ncol=3)
+  plot(plot.fit)
+})
+```
+
+
+This set of fits and estimated differences/ratio can be used to construct summary plots
+
+```{r  }
+# Get all of the fits and store them in a list with the emmeans computatons
+bs.diffs <- plyr::ldply(bs.fits, function(x){x$delta.slope})
+#head(bs.diffs)
+
+# pretty up the output
+temp<- bs.diffs
+num.col <- sapply(temp, is.numeric)
+temp[,num.col] <- round(temp[,num.col],2)
+temp$t.value <- NULL
+temp
+
+ggplot(data=bs.diffs, aes(y=paste(Watershed,".",Stream,sep=" "), x=Estimate))+
+   ggtitle("Estimated change in slope (log scale) between before and after")+
+   geom_point()+
+   ggplot2::geom_errorbarh( aes(xmin=X2.5.., xmax=X97.5..), height=.01)+
+   xlab("Estimated change in slope (log-scale) and 95% ci")+
+   ylab("Watershed - Stream")+
+   geom_vline(xintercept=0)+
+   facet_grid(Species~AgeClass)
+
+
+```
+
+
+Case where the 95% confidence interval does not include the value of 0 (vertical line) indicate
+evidence of a difference in the slope. The actual p-value is presented in the *bs.diffs* data.frame constructed 
+above if these are of interest.
+
+## Bayesian posterior beliefs
+The $\mathit{arm}$ package can be used to generate samples from the posterior distribution of the effect size.
+Here we can access the estimated difference in the slopes directly.
+
+```{r  message=FALSE,warning=FALSE}
+# sample from the posterior, plot the violin plots and compute the posterior belief that after-before >0
+bs.diffs.post <- plyr::ldply(bs.fits, function(x){
+   #browser()
+   cat(x$Watershed, x$Stream, x$Species, x$AgeClass,"\n")
+   #if(x$Stream=="Thistle")browser()
+   post.samples <- arm::sim(x$fit, n.sims=n.sims.post)
+   data.frame(post.diff.slope = -post.samples@fixef[,"YearP"]) # notice that R computes before-after
+})
+head(bs.diffs.post)
+
+# compute the posterior belief that difference (A-B) > 0
+bs.diffs.belief <- plyr::ddply(bs.diffs.post, c("Watershed","Stream","Species","AgeClass"),
+                     plyr::summarize,
+                       post.belief.gt.0 = mean(post.diff.slope >0))
+head(bs.diffs.belief)
+
+ggplot(data=bs.diffs.post, aes(y=paste(Watershed,".",Stream,sep=" "), x=post.diff.slope))+
+   ggtitle("Posterior sample for difference (log scale) in the slope (After - Before)")+
+   ggstance::geom_violinh()+
+   geom_text(data=bs.diffs.belief, label=formatC(bs.diffs.belief$post.belief.gt.0,2, format="f"), 
+             aes(x=-Inf), hjust=-.2) +
+   xlab("Change in slope (log-scale) (After-Before)\nWith posterior belief that difference > 0")+
+   ylab("Watershed - Stream")+
+   geom_vline(xintercept=0)+
+   facet_grid(Species~AgeClass)
+```
+
+The posterior belief that the difference in slopes (After-Before) is positive has a simple 
+interpretation. 
+
+## Checking assumptions
+It is always important to do a model assessment to ensure that the assumptions of the model are satisfied.
+In this analysis the key assumptions are
+
+* Each of the random effects (year effects and site-effects) have a normal distribution
+* There is no autocorrelation over time
+
+It is possible to extract the estimates of the two sets of random effects and create
+residual and caterpillar plots.
+
+```{r message=FALSE}
+# The dianostic plot is produced for one of the fits as a demonstration
+plyr::l_ply(bs.fits[2], function(x){
+   diag.plot <- sf.autoplot.lmer(x$fit)
+   plot(diag.plot)
+  
+})
+```
+
+The diagnostic plot is interpreted in the same way as previously described. There are now more fitted values
+because of the broken-stick line makes a prediction for each year of the study.
+
+
+```{r echo=FALSE, eval=FALSE}
+####################################################################################################################
+####################################################################################################################
+####################################################################################################################
+####################################################################################################################
+```
+
+# BACI analysis within each watershed
+## Introduction
+The problem with a before/after analysis is that the observed change could be 
+confounded with temporal effects. A Before-After-Control-Impact design uses one or more
+control streams to adjust for temporal effects.
+
+In this example, the Fall stream in the Ram watershed does not have any control streams
+and so will be excluded from this analysis.
+
+The key advantage of several control streams is that the scope of inference is now expanded.
+If there was only a single control stream, then one could argue that the effects observed
+are peculiar to the control stream chosen. If multiple control streams are (randomly) chosen,
+then one can argue that the effects are generalizable to all control streams in the watershed.
+
+Each watershed only has one treatment stream, so it can still be argued that the results are peculiar 
+to the treatment stream chosen. For the same reasons, it is also possible to have multiple 
+treatment streams within a watershed.
+
+The methods presented below will work if there are multiple control and/or multiple treatment streams
+but there must replication in at least one of the groups. If a watershed only has a single reference
+and a single control stream, the model below will still be applicable by removing the $\mathit{Stream}$ 
+random effects.
+
+The final result from a BACI analysis is the **differential change** in the mean of treatment stream relative to the mean of the control 
+stream(s). For example, suppose that the mean in the control streams changes from 0 to 1 between the before and after periods and
+the mean in the treatment streams changes from 3 to 6. The BACI effect is the differential change, i.e. $(6-3)=3$ vs.
+$(1-0)=1$ or $(6-3)-(1-0)=2$. For an analysis on the $log(\mathit{CUE})$ the BACI effect is difference in the mean
+logarithm which can be translated into ratios of ratios.
+
+
+## The statistical model
+As in the before/after analysis, the analysis can be done in two ways.
+
+* Average the multiple measurements from the sites first.
+* Fit a mixed linear model to the original measurements.
+
+Again, if the design were exactly balanced, the two approaches would give exactly the same results.
+
+
+The statistical model for each watershed is
+$$log(\mathit{CUE}+\mathit{offset}) \sim \mathit{BA} + \mathit{CI} + \mathit{BA}:\mathit{CI} + $\mathit{YearF}$(R) + \mathit{Stream}(R)+ $\mathit{YearF}$:\mathit{Stream}(R)$$
+where the $\mathit{BA}$ refers to the before/after effect; 
+the $\mathit{CI}$ refers to the control/impact effect;
+the $\mathit{BA}:\mathit{CI}$ refers to the BACI effect (the differential change) which is the term of interest;
+the $\mathit{YearF}$ refers to the year random effects (it must be declared as a factor to avoid being 
+confused with a linear trend);
+the $\mathit{Stream}$ term refers to the (random) differences among streams;
+and the $\mathit{YearF}:\mathit{Site}$ refers to the random noise where streams do not 
+track each other in parallel over time.
+
+The effects of stream will cancel in the analsis because each stream is measured
+before and after impact, i.e., each stream serves as a blocking variable.
+The effects of year will also cancel in the analysis because in each year, both control
+and impact streams are measured, i.e., each year also serves as a blocking variable.
+The last term represents inconsistency in the mean at a stream over time compared to other streams, i.e.,
+a non-parallelism effect and is often the limiting factor in a power analysis 
+in a BACI design.
+
+The same model can be used if some streams are not measured in some years and if the design were unbalanced.
+
+
+## Using R to fit and extract results
+We exclude the watersheds that don't have a control and treatment stream and a duplicate of either the control
+or treatment streams.
+
+```{r }
+n.streams <- plyr::ddply(cue.data, "Watershed", plyr::summarize,
+                         n.control  =length(unique(Stream[ CI=="C"])),
+                         n.treatment=length(unique(Stream[ CI=="T"])))
+n.streams
+
+watershed.exclude <- n.streams[ n.streams$n.control==0 | n.streams$n.treatment==0,]
+watershed.exclude
+
+dim(cue.data)
+cue.data.red <- cue.data[ !cue.data$Watershed %in% watershed.exclude$Watershed, ]
+dim(cue.data.red)
+```
+
+The $\mathit{lmerTest}$ package is used to fit the model; the $\mathit{emmeans}$ package is used to estimate the
+BACI effect after the model is fit. Some care is needed to specify the coefficients of the BACI contrast 
+properly. For example, in this model, the interaction (BACI) term is specified as $\mathit{BA}:\mathit{CI}$.
+The $\mathit{BA}$ variable is coded using *After* and *Before*; the $\mathit{CI}$ variable is coded using *C*
+and *I*. Consequently, the BACI terms are in the order *After C*, *Before C*,*After T*, and *Before T*.
+
+We would like the BACI contrast to be computed as the difference of difference in the mean as
+$$\mathit{BACI} = (\mu_{\mathit{After~T}} - \mu_{\mathit{Before~T}}) - (\mu_{\mathit{After~C}} - \mu_{\mathit{Before~C}})$$
+and so the BACI coefficients are $(-1,1,1,-1)$ as specified below.
+
+```{r  warning=FALSE}
+# Get all of the fits and store them in a list with the emmeans computatons
+baci.fits <- plyr::dlply(cue.data.red, c("Watershed","Species","AgeClass"), function(x){
+   #browser()
+   x$YearF <- factor(x$Year)
+   # If we use the log() in the fit, the emmeans package can do the back transform automatically for us
+   fit <- lmerTest::lmer(log(CUE+offset) ~ BA + CI + BA:CI + (1|YearF) +(1|Stream) +(1|YearF:Stream), data=x)
+   # we create the emmeans object and then find the pairwise difference
+   fit.emmo <- emmeans::emmeans(fit, ~BA:CI)
+   BACI.diff.log <- summary(contrast(fit.emmo,list(baci=c(-1,1,1,-1))), infer=TRUE)
+   BACI.ratio    <- summary(contrast(fit.emmo,list(baci=c(-1,1,1,-1)), type="response")) 
+   list(fit=fit, 
+        BACI.diff.log=BACI.diff.log, 
+        BACI.ratio=BACI.ratio)
+})
+
+# Show the results for the first fit
+baci.fits[[1]]$fit
+baci.fits[[1]]$BACI.diff.log
+baci.fits[[1]]$BACI.ratio
+```
+A message about a singular fit indicates that the estimated standard deviation of some of the random effects is 0.
+The estimated BACI effect along with standard errors, a 95% confidence limit,
+and p-value of the test for no effect is produced.
+
+We can examine the plots of fitted and predicted values to check te general form of the fit and
+again for any obvious problems:
+```{r}
+# Get the fitted values
+baci.pred <- plyr::ldply(baci.fits, function(x){
+   #browser()
+   # need to convert the YearF from factor back to numeric value 
+   pred <- cbind( x$fit@frame, pred.global=predict(x$fit, re.form=~0))
+   pred$pred.stream =predict(x$fit, re.form=~(1|Stream))
+   pred$Year <- as.numeric(as.character(pred$YearF))
+   pred
+})
+
+# Now to generate the observed and fitted data for each Watershed/Stream combination
+npages=2 # only 2 watersheds present
+plyr::l_ply(1:npages, function(page){
+  plot.fit <- ggplot(data=cue.data.red, aes(x=Year, y=logCUE))+
+     ggtitle("Observed and fitted data from BACI in each watershed")+
+     #geom_point(position=position_jitter(width=0.1), size=.1)+ too buzy
+     geom_line(data=baci.pred,  aes(y=pred.global, color=CI), size=2)+
+     geom_line(data=mean.CUE[ !mean.CUE$Watershed %in% watershed.exclude$Watershed,], aes(y=mean.logCUE, linetype=Stream))+
+     geom_vline(data=year.restore[ !year.restore$Watershed %in% watershed.exclude$Watershed,], aes(xintercept=year.restore+.5))+
+     facet_grid_paginate(Watershed+Species~AgeClass, page=page, nrow=3, ncol=3)
+  plot(plot.fit)
+})
+```
+
+
+
+
+This set of fits and estimated BACI effects can be used to construct summary plots
+
+```{r  }
+# Get all of the fits and store them in a list with the emmeans computatons
+baci.effs <- plyr::ldply(baci.fits, function(x){x$BACI.diff.log})
+#head(baci.effs)
+
+#pretty up the output
+temp<- baci.effs
+num.col <- sapply(temp, is.numeric)
+temp[,num.col] <- round(temp[,num.col],2)
+temp$t.ratio <- NULL
+temp
+
+ggplot(data=baci.effs, aes(y=Watershed, x=estimate))+
+   ggtitle("Estimated BACI effects (log scale)",
+           subtitle="BACI computed as (AT-BT)-(AC-BC)")+
+   geom_point()+
+   ggplot2::geom_errorbarh( aes(xmin=lower.CL, xmax=upper.CL), height=.01)+
+   xlab("Estimated BACI effect (log-scale) and 95% ci and p-value")+
+   ylab("Watershed")+
+   geom_vline(xintercept=0)+
+   geom_text( label=format.pval(baci.effs$p.value, digits=2,eps=.0001), aes(x=-Inf), hjust=-.01, vjust=1.5)+
+   facet_grid(Species~AgeClass)
+```
+
+A similar plot can be made for the BACI ratio (not shown). 
+
+Case where the 95% confidence interval does not include the value of 0 (vetical line) indicate
+evidence of a BACI effect. The actual p-value is also shown on the plot
+
+## Bayesian posterior beliefs
+We again sample from the posterior distrbution of the parameters using the *arm* package. Some care
+is needed to ensure that the BACI comparison is computed in the correct direction. Notice here that 
+we must take the negative of the BACI interaction term.
+
+```{r  }
+# sample from the posterior for the BACI effect, plot the violin plots and compute the posterior belief that BACI effect >0
+# Again, need to be careful that the sign of the contrast for the BACI effect is correct.
+baci.post <- plyr::ldply(baci.fits, function(x){
+   #browser()
+   post.samples <- arm::sim(x$fit, n.sims=n.sims.post)
+   data.frame(post.baci = -post.samples@fixef[,"BABefore:CIT"]) # notice that R computes before-after
+})
+head(baci.post)
+
+# compute the posterior belief that difference (A-B) > 0
+baci.belief <- plyr::ddply(baci.post, c("Watershed","Species","AgeClass"),
+                     plyr::summarize,
+                       post.belief.gt.0 = mean(post.baci >0))
+head(baci.belief)
+
+ggplot(data=baci.post, aes(y=Watershed, x=post.baci))+
+   ggtitle("Posterior sample for BACI effect (log scale)",
+           subtitle="BACI computed as (AT-BT)-(AC-BC)")+
+   ggstance::geom_violinh()+
+   geom_text(data=baci.belief, label=formatC(baci.belief$post.belief.gt.0,2, format="f"), 
+             aes(x=-Inf), hjust=-.2, vjust=1.5) +
+   xlab("BACI effect (log-scale) \nWith posterior belief that difference > 0")+
+   ylab("Watershed ")+
+   geom_vline(xintercept=0)+
+   facet_grid(Species~AgeClass)
+```
+
+## Checking assumptions
+It is always important to do a model assessment to ensure that the assumptions of the model are satisfied.
+In this analysis the key assumptions are
+
+* Each of the random effects (year effects, stream effects, the year-stream interaction effects, and site-effects) 
+have a normal distribution
+* There is no autocorrelation over time
+
+It is possible to extract the estimates of the sets of random effects and create
+residual and caterpillar plots.
+
+```{r message=FALSE}
+# The dianostic plot is produced for the first fit as a demonstration
+plyr::l_ply(baci.fits[1], function(x){
+   diag.plot <- sf.autoplot.lmer(x$fit)
+   plot(diag.plot)
+  
+})
+
+
+
+```
+
+The residual plot (upper left corner) should show random scatter around 0. In this plot, 
+we notice what appears to be a "line" of residuals. This is an aftefact of the data because
+it is not possible to have a CUE that is negative and and offset is added to all CUE values before
+taking logarithms. For example, consider an observed value of CUE of 0 
+where the offset was .0067 (2 fish/300 m). The observed value of $log(\mathit{CUE}+\mathit{offset})=-5$.
+If the predicted value on the logarithmic value was $-5$, then the residual is 0;
+If the predicted value on the logarithmic scale was $-4$, then the residual is -1, etc.
+As noted previously,
+the distribution of the residuals at the lowest level is not that crucial because measurements at
+sites are essentially being averaged for each year. 
+
+The normal
+probability plot (upper right) for the residuals (the site effects) should fall
+close to the theoretical line of fit. It is not crucial that these lowest random effects have an exact normal distribution
+since they are effectively averaged in the analysis and the central-limit theorem 
+indicates that the average of any distribution will tend towards normality as the
+sample size increases.
+
+The caterpillar plots should
+show no large outlier effects for specific years. In this case, the estimated standard
+deviation of the random effects is 0, so all of the points (with 95% credible interval)
+are the same at 0.
+
+It will be extremely difficult to detect autocorrelation over time unless you have 10+ years of 
+data (Bence 1995) and so this is not done here.
+
+
+```{r echo=FALSE, eval=FALSE}
+####################################################################################################################
+####################################################################################################################
+####################################################################################################################
+####################################################################################################################
+```
+# Multiple BACI - combining over watersheds
+## Introduction
+The impact of restortion may not be equal for all watersheds, i.e. variation may also exist in the BACI effect.
+In this section, we will fit a super-model for all streams that estimates the averge effect of restoration
+across watersheds, but also how variable this effect is across watersheds.
+
+
+## The statistical model
+We once again use a mixed linear model to account for the various sources of variation in the model.
+
+The statistical model for each watershed is
+$$log(\mathit{CUE}+\mathit{offset}) \sim \mathit{BA} + \mathit{CI} + \mathit{BA}:\mathit{CI} + 
+\mathit{Watershed}:\mathit{CI}(R) +\mathit{Watershed}:\mathit{BA}(R)+ \mathit{Watershed}:\mathit{CI}:\mathit{BA})+
+$\mathit{YearF}$(R) + \mathit{Stream}(R)+ $\mathit{YearF}$:\mathit{Stream}(R)$$
+where the new random effect involving the *Watershed* allow for variation in these effects
+across the watershed.
+
+It is not necessary to have a random effect for Watershed because we have random effects
+for each individual stream.
+
+It is not necessary that the restoration year is the same in all watershed as long as the
+data file indictes which year belong to which period for each watershed.
+
+We implicitly assume that year-specific effects apply to all watersheds. This can be 
+assessed by adding an watershed-year interaction and looking at the size of the resulting
+variance component.
+
+
+## Using R to fit and extract results
+It would make no sense to combine results over watersheds where only one watershed is involved
+for a species-age class. For example, *RNTR* is only observed in one watershed.
+
+Similarly, we need to exclude watersheds where no BACI design was done. 
+
+```{r }
+# exclude species that only appear in 1 watershed
+n.watersheds <- plyr::ddply(cue.data, c("Species"), plyr::summarize,
+                         n.watersheds=length(unique(Watershed)))
+n.watersheds
+
+species.exclude <- n.watersheds[ n.watersheds$n.watersheds==1,]
+species.exclude
+
+dim(cue.data)
+cue.data.red <- cue.data[ !cue.data$Species %in% species.exclude$Species, ]
+dim(cue.data.red)
+
+# exclude watersheds that don't have a BACI design
+n.streams <- plyr::ddply(cue.data.red, "Watershed", plyr::summarize,
+                         n.control  =length(unique(Stream[ CI=="C"])),
+                         n.treatment=length(unique(Stream[ CI=="T"])))
+n.streams
+
+watershed.exclude <- n.streams[ n.streams$n.control==0 | n.streams$n.treatment==0,]
+watershed.exclude
+
+dim(cue.data.red)
+cue.data.red <- cue.data.red[ !cue.data.red$Watershed %in% watershed.exclude$Watershed, ]
+dim(cue.data.red)
+```
+
+The $\mathit{lmerTest}$ package is used to fit the model; the $\mathit{emmeans}$ package is used to estimate the
+BACI effect after the model is fit. Some care is needed to specify the coefficients of the BACI contrast 
+properly. For example, in this model, the interaction (BACI) term is specified as $\mathit{BA}:\mathit{CI}$.
+The $\mathit{BA}$ variable is coded using *After* and *Before*; the $\mathit{CI}$ variable is coded using *C*
+and *I*. Consequently, the BACI terms are in the order *After C*, *Before C*,*After T*, and *Before T*.
+
+We would like the BACI contrast to be computed as the difference of difference in the mean as
+$$\mathit{BACI} = (\mu_{\mathit{After~T}} - \mu_{\mathit{Before~T}}) - (\mu_{\mathit{After~C}} - \mu_{\mathit{Before~C}})$$
+and so the BACI coefficients are $(-1,1,1,-1)$ as specified below.
+
+```{r  warning=FALSE}
+# Get all of the fits for the global BACI model and store them in a list with the emmeans computatons
+baci.g.fits <- plyr::dlply(cue.data.red, c("Species","AgeClass"), function(x){
+   #browser()
+   x$YearF <- factor(x$Year)
+   # If we use the log() in the fit, the emmeans package can do the back transform automatically for us
+   fit <- lmerTest::lmer(log(CUE+offset) ~ BA + CI + BA:CI + 
+                           (1|Watershed:CI)+(1|Watershed:BA)+(1|Watershed:CI:BA)+
+                           (1|YearF) +(1|Stream) +(1|YearF:Stream), data=x)
+   # we create the emmeans object and then find the pairwise difference
+   fit.emmo <- emmeans::emmeans(fit, ~BA:CI)
+   BACI.diff.log <- summary(contrast(fit.emmo,list(baci=c(-1,1,1,-1))), infer=TRUE)
+   BACI.ratio    <- summary(contrast(fit.emmo,list(baci=c(-1,1,1,-1)), type="response")) 
+   list(fit=fit, 
+        BACI.diff.log=BACI.diff.log, 
+        BACI.ratio=BACI.ratio)
+})
+
+# Show the results for one of the fits
+baci.fits[[1]]$fit
+baci.fits[[1]]$BACI.diff.log
+baci.fits[[1]]$BACI.ratio
+```
+A message about a singular fit indicates that the estimated standard deviation of some of the random effects is 0.
+The estimated BACI effect along with standard errors, a 95% confidence limit,
+and p-value of the test for no effect is produced.
+
+We can examine the plots of fitted and predicted values to check te general form of the fit and
+again for any obvious problems:
+```{r}
+# Get the fitted values
+baci.g.pred <- plyr::ldply(baci.g.fits, function(x){
+   #browser()
+   # need to convert the YearF from factor back to numeric value 
+   pred <- cbind( x$fit@frame, pred.global=predict(x$fit, re.form=~0))
+   pred$pred.watershed =predict(x$fit, re.form=~(1|Watershed:CI))
+
+   pred$pred.stream =predict(x$fit, re.form=~(1|Stream))
+   pred$Year <- as.numeric(as.character(pred$YearF))
+   pred
+})
+
+# Now to generate the observed and fitted data for each Watershed/Stream combination
+npages=1 # only 1 page is needed
+plyr::l_ply(1:npages, function(page){
+  plot.fit <- ggplot(data=cue.data.red, aes(x=Year, y=logCUE))+
+     ggtitle("Observed and fitted data from global BACI")+
+     #geom_point(position=position_jitter(width=0.1), size=.1)+ too buzy
+     geom_line(data=baci.g.pred,  aes(y=pred.global, color=CI), size=2)+
+     geom_line(data=mean.CUE[ !mean.CUE$Watershed %in% watershed.exclude$Watershed,], aes(y=mean.logCUE, linetype=Stream))+
+     geom_vline(data=year.restore[ !year.restore$Watershed %in% watershed.exclude$Watershed,], aes(xintercept=year.restore+.5))+
+     facet_grid_paginate(Species~AgeClass, page=page, nrow=3, ncol=3)
+  plot(plot.fit)
+})
+```
+
+This set of fits and estimated BACI effects can be used to construct summary plots
+
+```{r  }
+# Get all of the fits and store them in a list with the emmeans computatons
+baci.g.effs <- plyr::ldply(baci.g.fits, function(x){x$BACI.diff.log})
+#head(baci.effs)
+
+#pretty up the output
+temp<- baci.g.effs
+num.col <- sapply(temp, is.numeric)
+temp[,num.col] <- round(temp[,num.col],2)
+temp$t.ratio <- NULL
+temp
+
+ggplot(data=baci.g.effs, aes(y="GLOBAL", x=estimate))+
+   ggtitle("Estimated GLOBAL BACI effects (log scale)",
+           subtitle="BACI computed as (AT-BT)-(AC-BC)")+
+   geom_point()+
+   ggplot2::geom_errorbarh( aes(xmin=lower.CL, xmax=upper.CL), height=.01)+
+   xlab("Estimated BACI effect (log-scale) and 95% ci and p-value")+
+   ylab("Watershed")+
+   geom_vline(xintercept=0)+
+   geom_text( label=format.pval(baci.g.effs$p.value, digits=2,eps=.0001), aes(x=-Inf), hjust=-.01, vjust=1.5)+
+   facet_grid(Species~AgeClass)
+```
+
+A similar plot can be made for the BACI ratio (not shown). 
+
+Case where the 95% confidence interval does not include the value of 0 (vetical line) indicate
+evidence of a GLOBAL BACI effect. The actual p-value is also shown on the plot.
+
+The BACI effect may vary among the watersheds. This is measured by the standard deviation of the
+BACI by watershed interaction:
+```{r }
+# Extract the BACI x watershed standard deviation
+baci.g.w.baci.sd <- plyr::ldply(baci.g.fits, function(x){
+    #browser()
+    vc <- as.data.frame(VarCorr(x$fit))
+    data.frame(w.baci.sd = vc[ vc$grp=="Watershed:CI:BA", "sdcor"])
+})
+baci.g.w.baci.sd
+```
+
+This provides information on the variation in the BACI effect among the watersheds.
+
+## Bayesian posterior beliefs
+We again sample from the posterior distrbution of the parameters using the *arm* package. Some care
+is needed to ensure that the BACI comparison is computed in the correct direction. Notice here that 
+we must take the negative of the BACI interaction term.
+
+```{r  }
+# sample from the posterior for the BACI effect, plot the violin plots and compute the posterior belief that BACI effect >0
+# Again, need to be careful that the sign of the contrast for the BACI effect is correct.
+baci.g.post <- plyr::ldply(baci.g.fits, function(x){
+   #browser()
+   post.samples <- arm::sim(x$fit, n.sims=n.sims.post)
+   data.frame(post.baci = -post.samples@fixef[,"BABefore:CIT"]) # notice that R computes before-after
+})
+head(baci.g.post)
+
+# compute the posterior belief that difference (A-B) > 0
+baci.g.belief <- plyr::ddply(baci.g.post, c("Species","AgeClass"),
+                     plyr::summarize,
+                       post.belief.gt.0 = mean(post.baci >0))
+head(baci.g.belief)
+
+ggplot(data=baci.g.post, aes(y="GLOBAL", x=post.baci))+
+   ggtitle("Posterior sample for GLOBAL BACI effect (log scale)",
+           subtitle="BACI computed as (AT-BT)-(AC-BC)")+
+   ggstance::geom_violinh()+
+   geom_text(data=baci.g.belief, label=formatC(baci.g.belief$post.belief.gt.0,2, format="f"), 
+             aes(x=-Inf), hjust=-.2, vjust=1.5) +
+   xlab("BACI effect (log-scale) \nWith posterior belief that difference > 0")+
+   ylab("Watershed ")+
+   geom_vline(xintercept=0)+
+   facet_grid(Species~AgeClass)
+```
+
+
+
+## Checking assumptions
+
+It is possible to extract the estimates of the sets of random effects and create
+residual and caterpillar plots in the usual way.
+
+```{r message=FALSE}
+# The dianostic plot is produced for the one of the fits as a demonstration
+plyr::l_ply(baci.g.fits[1], function(x){
+   diag.plot <- sf.autoplot.lmer(x$fit)
+   plot(diag.plot)
+  
+})
+```
+
+The residual plots are interpreted in the same way as previously.
+Again, the "line" in the residuals is an artefact of CUE being limited below by 0. As noted previously,
+the distribution of the residuals at the lowest level is not that crucial because measurements at
+sites are essentially being averaged for each year. 
+
+```{r echo=FALSE, eval=FALSE}
+####################################################################################################################
+####################################################################################################################
+####################################################################################################################
+####################################################################################################################
+```
+
+# Summary and recommendations
+A key point when analyzing the future data is to account for stream-years-sites where no fish of a particular
+species was found, i.e. 0 counts must be imputed. This is a common problem with many database systems
+that only record positive counts. An additional table is needed in the database of the set of sites visited in
+each stream-year and the species to be expected, so that 0's can be properly imputed. The FWMIS system has been
+programmed to do the 0 imputations, so no further imputation will be needed.
+
+This demonstration shows several ways to analyse the upcoming data to be collected from the restoration
+program. The analyzes become progressively more complex so that deficiencies of each 
+analysis can be addressed.
+
+* The before-after analysis estimate of effect size for each stream will be confounded with the effects
+of any other temporal variable. For example, suppose that in the five years after restoration takes place,
+that the precipitation levels are much lower than normal leading to degradation of water quality and
+ a reduction in CUE. This will be confounded with the difference in mean response between the after
+ and before periods.
+ 
+ * The before-after analysis also assumes that the change due to restoration is an immediate step function.
+ In some cases, improvements after restoration will be gradual and cumulative as, for example, 
+ habitat slowly improves. In this case, a broken-stick model looks for a change in the trend
+ starting at the time of restoration. In this case, the time of the change in trend is known. 
+ It is a much more difficult problem to fit a model where the break-point is to be estimated as well.
+ This is known as the change-point problem (Toms and Lesperance, 2003) and will require many, many, many
+ more years of data before it is feasible (typically at least 30-40 years of data!).
+ 
+ * The BACI design uses stream(s) that have not been restored as controls to account for temporal change.
+ In this study, multiple control streams provide assurances that the observed effects are not 
+ specific to a particular control stream but can be generalized across the set of control streams.
+ Only having a single treatment stream, unfortunately, still leave some question that the results
+ are particular to this specific treatment stream, but the variability among control streams provides
+ some (limited) information on the variation that would be expected if multiple treatment streams
+ were used.
+ 
+ * We did not examine a BACI analysis where a change in slopes was investigated. This model
+ is straightforward and would simply involve including terms for the trend during the before and after periods 
+ in the control and impact streams.
+ 
+ * Finally, a global BACI analysis combined results over watersheds. Here the BACI effect is a 
+ "global" average effect. Consequently, the the restoration actions are quite different across
+ watersheds, this average BACI effect must be interpretted with care.
+ 
+This demonstration shows the results from a classical analysis using linear mixed models fit with REML,
+the standard analysis that can account for multiple sources of variation. In particular, any analysis 
+that involves measurements over time must account for year-specific effects (process error) which, if
+ignored, would violate the assumption of independence among observations. In this particular case,
+sites within a stream-year are pseudo-replicates and cannot be analyzed directly.
+
+A common problem with the results from Neyman-Pearson approaches (p-values and confidence intervals), is that
+these statistics do not have an intutive interpretation. For example, many people will interpret a p-value of 0.01 as
+being the probability that the hypothesis of no effect is true. This is an erroneous interpretation. 
+Similarly, many people interpret confidence intervals as a zone of belief of the underlying parameter value.
+This is again erroneous. In both cases, a Bayesian perspective is helpful, in particular, the samples from 
+the posterior distribution of a parameter can be interpretted as the "belief" in particular values of the 
+parameters. So it is sensible to compute the posteriour belief that the effect is positive. Fortunately, 
+the *arm* package in $R$ makes it particularly easy to sample from the posterior distribution of 
+parameters in mixed linear models and so easy to compute these beliefs.
+
+# References
+Bence, J. R. 1995. “Analysis of Short Time Series: Correction for Autocorrelation.” Ecology 76: 628–39.
+
+Kuznetsova A, Brockhoff PB, Christensen RHB (2017). “lmerTest Package: Tests in Linear Mixed Effects Models.” Journal
+of Statistical Software, 82, 1-26. doi: 10.18637/jss.v082.i13 (URL: http://doi.org/10.18637/jss.v082.i13).
+
+Gelman, A. and Hill, J. (2006). Data Analysis Using Regression and Multilevel/Hierarchical Models. Cambridge University Press.
+
+Gelman, A. and Su, Yu-Sung (2018). arm: Data Analysis Using Regression and Multilevel/Hierarchical Models. R package
+  version 1.10-1. https://CRAN.R-project.org/package=arm
+
+Lenth, R. (2019). emmeans: Estimated Marginal Means, aka Least-Squares Means. R package version 1.3.2.
+  https://CRAN.R-project.org/package=emmeans
+  
+R Core Team (2019). R: A language and environment for statistical computing. R Foundation for Statistical Computing,
+  Vienna, Austria. URL https://www.R-project.org/.
+  
+Schwarz. C. J. (2018). Power analysis for evaluating the effectiveness of intensive OHV reclamation activities to recover native trout along the East Slopes of Alberta, Canada. Prepared for the Alberta Ministry of Environment. 53pp. 
+
+Schwarz, C. J. (2017). Monitoring Design and Analysis using the Fish Sustainability Index (FSI). Prepared for the Alberta Ministry of Environment. 16 pp + Extensive R code.
+
+Toms, J. D., and M. L. Lesperance. 2003. “Piecewise Regression A Tool for Identifying Ecological Thresholds.” Ecology 84 (8): 2034–41.
