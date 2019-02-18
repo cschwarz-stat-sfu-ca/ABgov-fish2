@@ -240,6 +240,62 @@ xtabs(~Stream+Year, data=species.n, exclude=NULL,na.action=na.pass)
 species.n$BA[ species.n$Year==2018] <- "Before"
 xtabs(~Stream+paste(Year,'.',substr(BA,1,1),sep=""), data=species.n, exclude=NULL,na.action=na.pass)
 
-write.csv(species.n[, c("Species","AgeClass","Watershed","Stream","Year","CI","BA","Site","CUE")],
+
+# compute the year of restoration
+year.restore <- plyr::ddply(species.n, c("Stream"), plyr::summarize, 
+                            year.restore=min(Year[BA=="After"]))
+year.restore
+
+species.n <- merge(species.n, year.restore, all.x=TRUE)
+
+# The above generated data has NO effect of restoration either in the mean or in the slope.
+# We will add shift in the meanfor the three streams in the watershet for BKTR
+# These are on the log-scale
+effects.size.mean.csv <- textConnection(
+  "Stream, BKTR, BLTR, RNTR
+Fall,      2, 0, 0
+Mackenzie, 1.5, 0, 0
+Rocky,     2.5, 0, 0")
+effects.size.mean <- read.csv(effects.size.mean.csv, header=TRUE, strip.white=TRUE, as.is=TRUE)
+write.csv(effects.size.mean, file="effects.size.mean.csv", row.names=FALSE)
+
+effects.size.mean.long <- reshape2::melt(effects.size.mean,
+                                         id.var="Stream",
+                                         variable.name="Species",
+                                         value.name="Rest.add.effect")
+effects.size.mean.long$BA <- "After"
+
+species.n <- merge(species.n, effects.size.mean.long, all.x=TRUE)
+species.n$Rest.add.effect[ is.na(species.n$Rest.add.effect)] <- 0  # for all other cases the restoration effect (log scale)
+
+species.n$CUE <- species.n$CUE*exp(species.n$Rest.add.effect)
+
+
+# We will add shift in the slope for the three streams in the watershet for BLTR
+# These are on the log-scale
+effects.size.slope.csv <- textConnection(
+  "Stream, BKTR, BLTR, RNTR
+Fall,      0, .20, 0
+Mackenzie, 0, .15, 0
+Rocky,     0, .25, 0")
+effects.size.slope <- read.csv(effects.size.slope.csv, header=TRUE, strip.white=TRUE, as.is=TRUE)
+write.csv(effects.size.slope, file="effects.size.slope.csv", row.names=FALSE)
+
+effects.size.slope.long <- reshape2::melt(effects.size.slope,
+                                         id.var="Stream",
+                                         variable.name="Species",
+                                         value.name="Rest.slope.effect")
+effects.size.slope.long$BA <- "After"
+
+species.n <- merge(species.n, effects.size.slope.long, all.x=TRUE)
+species.n$Rest.slope.effect[ is.na(species.n$Rest.slope.effect)] <- 0  # for all other cases the restoration effect (log scale)
+
+
+species.n$CUE <- species.n$CUE*exp(species.n$Rest.slope.effect*(pmax(0,species.n$Year-species.n$year.restore)) )
+
+
+
+write.csv(species.n[, c("Species","AgeClass","Watershed","Stream","Year",
+                        "CI","BA","Site","CUE")],
       file="simulated.data.csv", row.names=FALSE)
 
