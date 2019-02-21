@@ -180,7 +180,9 @@ sf.autoplot.lmer <- function(model, ..., which=TRUE, mfrow=c(2,2)){
   
   
   
-  df <- fortify(model)
+  #df <- fortify(model)
+  df <- model@frame
+  df <- cbind(df, .fitted=fitted(model), .resid=resid(model))
   df <- cbind(df, rows=1:nrow(df))
   
   # residuals vs fitted

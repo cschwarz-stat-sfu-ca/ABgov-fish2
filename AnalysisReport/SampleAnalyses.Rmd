@@ -636,12 +636,13 @@ effect.size.mean
 
 ### Change in slope
 The control sites were assumed to have no change in slope between the before and after periods for
-all species. A slope change ($\beta_\textit{after}-\beta_\textit{before}$) was used to modify the CUE (on the log-scale) as shown below:
+all species. A revised slope ($\beta_\textit{after}-\beta_\textit{before}$) was used to modify the CUE (on the log-scale) as shown below:
 ```{r echo=FALSE}
 effect.size.slope <- read.csv("effects.size.slope.csv", header=TRUE, as.is=TRUE, strip.white=TRUE)
 effect.size.slope
 ```
 
+The new slope apply to all age classes (if there are more than one).
 The simulated data was written to a *.csv* file for usage in this document. 
 
 
@@ -1576,6 +1577,7 @@ residual and caterpillar plots.
 ```{r message=FALSE}
 # The dianostic plot is produced for the first fit as a demonstration
 plyr::l_ply(baci.fits[1], function(x){
+   #browser()
    diag.plot <- sf.autoplot.lmer(x$fit)
    plot(diag.plot)
   

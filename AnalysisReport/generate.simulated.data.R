@@ -3,6 +3,9 @@
 #    - key species BLTR, RNTR, and BKTR
 #      two age classes - immature, mature, both
 # and will also include imputed 0 for species not seen at a year-site-visit.
+# The existing data will only be used to estimate the variance components
+# and simulated data will be used to "replace" the existing data
+
 
 # Get the existing data
 #
@@ -196,13 +199,19 @@ species.n.sim <- plyr::ddply(species.n, c("Species","AgeClass"), function(x,new.
        #browser()
        x
    })
+   #browser()
+   # take the existing data and strip off the current data values
+   old.data <- x[,c("Stream","Year","Watershed","CI","BA","Site")]
+   # add the old data to the new data
+   new.data <- plyr::rbind.fill(old.data, new.data)
 
    # add back stream effect
    stream.eff <- data.frame(stream.eff=unlist(rand.eff$StreamF$"(Intercept)"),
                             Stream = row.names(rand.eff$StreamF))
    new.data <- merge(new.data, stream.eff, all.x=TRUE)
 
-   # generate new year effects by sampling from existing values   
+   # generate new year effects by sampling from existing values 
+   new.years <- c(new.years,unique(x$Year)) # for the old and new years
    year.eff <- data.frame(Year=new.years, 
                           year.eff=sample(unlist(rand.eff$YearF$"(Intercept)"), length(new.years), replace=TRUE))
    new.data <- merge(new.data, year.eff, all.x=TRUE)
@@ -230,7 +239,8 @@ min(species.n.sim$CUE)
 unique(species.n.sim$Year)
 unique(species.n$Year)
 
-species.n <- plyr::rbind.fill(species.n, species.n.sim)
+#species.n <- plyr::rbind.fill(species.n, species.n.sim) # sp
+species.n <- species.n.sim  # we now simulate the past data as well
 
 xtabs(~BA+Year, data=species.n, exclude=NULL, na.action=na.pass)
 xtabs(~Stream+CI, data=species.n, exclude=NULL,na.action=na.pass)
@@ -239,6 +249,32 @@ xtabs(~Stream+Year, data=species.n, exclude=NULL,na.action=na.pass)
 # Thistle Creek doesn't have two years before so we make 2018 also a before year
 species.n$BA[ species.n$Year==2018] <- "Before"
 xtabs(~Stream+paste(Year,'.',substr(BA,1,1),sep=""), data=species.n, exclude=NULL,na.action=na.pass)
+
+
+# find the grand mean for each species x stream
+species.mean <- plyr::ddply(species.n, c("Stream","Species"), plyr::summarize,
+          species.mean=mean(log(CUE+.02)))
+species.mean
+
+species.n <- merge(species.n, species.mean, all.x=TRUE)
+head(species.n)
+
+# Detrend each dataset to have a slope of 0 both before and after prior to adding in simulated effects below
+species.n <- plyr::ddply(species.n, c("Stream","Species","BA"), function(x){
+    # fit the trend using ordinary least squares
+    cat(x$Stream[1], x$Species[1], x$BA[1], "\n")
+    #browser()
+    fit <- lm(log(CUE+.02) ~ Year, data=x)
+    pred.values <- fitted(fit)
+    x$logCUE <- log(x$CUE+.02)-pred.values+x$species.mean
+    x$CUE <- exp(x$logCUE)
+    x
+})
+
+plyr::ddply(species.n, c("Stream","Species"), plyr::summarize,
+          slope=coef(lm(log(CUE+.02)~Year))[2])
+
+sum(is.na(species.n$CUE))
 
 
 # compute the year of restoration
@@ -275,9 +311,9 @@ species.n$CUE <- species.n$CUE*exp(species.n$Rest.add.effect)
 # These are on the log-scale
 effects.size.slope.csv <- textConnection(
   "Stream, BKTR, BLTR, RNTR
-Fall,      0, .20, 0
-Mackenzie, 0, .15, 0
-Rocky,     0, .25, 0")
+Fall,      0, .4, 0
+Mackenzie, 0, .45, 0
+Rocky,     0, .35, 0")
 effects.size.slope <- read.csv(effects.size.slope.csv, header=TRUE, strip.white=TRUE, as.is=TRUE)
 write.csv(effects.size.slope, file="effects.size.slope.csv", row.names=FALSE)
 
@@ -290,8 +326,13 @@ effects.size.slope.long$BA <- "After"
 species.n <- merge(species.n, effects.size.slope.long, all.x=TRUE)
 species.n$Rest.slope.effect[ is.na(species.n$Rest.slope.effect)] <- 0  # for all other cases the restoration effect (log scale)
 
+head(species.n)
+head(species.n[ species.n$Species=="BLTR" &species.n$BA=="After" & species.n$Stream=="Fall",])
 
 species.n$CUE <- species.n$CUE*exp(species.n$Rest.slope.effect*(pmax(0,species.n$Year-species.n$year.restore)) )
+
+head(species.n)
+head(species.n[ species.n$Species=="BLTR" &species.n$BA=="After" & species.n$Stream=="Fall",])
 
 
 
